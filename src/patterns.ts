@@ -10,6 +10,8 @@
  * default because it appears in AWS's own docs. Nothing else is.
  */
 
+import { DEFAULT_ENTROPY_MIN_LENGTH, DEFAULT_ENTROPY_THRESHOLD, findHighEntropyTokens, type EntropyOptions } from './entropy.js';
+
 export interface SecretPattern {
   id: string;
   name: string;
@@ -105,6 +107,8 @@ export function redact(text: string, regex: RegExp): string {
 export interface ScanTextOptions {
   allowlist?: readonly string[];
   patterns?: readonly SecretPattern[];
+  /** High-entropy check; enabled by default (threshold 4.5, min length 20). */
+  entropy?: EntropyOptions;
 }
 
 /** Scan one text (a file's staged content) line by line. */
@@ -114,15 +118,24 @@ export function scanText(
 ): Finding[] {
   const allowlist = [...DEFAULT_ALLOWLIST, ...(options.allowlist ?? [])];
   const patterns = options.patterns ?? DEFAULT_PATTERNS;
+  const entropyEnabled = options.entropy?.enabled !== false;
   const findings: Finding[] = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
     if (isAllowlisted(line, allowlist)) continue;
     const lineFindings: Finding[] = [];
+    // Byte ranges of pattern matches on this line, so the entropy check
+    // does not report the same secret a second time under another name.
+    const matchedRanges: Array<[number, number]> = [];
     for (const pattern of patterns) {
-      const re = new RegExp(pattern.regex.source, pattern.regex.flags);
-      if (re.test(line)) {
+      const re = new RegExp(pattern.regex.source, pattern.regex.flags.includes('g') ? pattern.regex.flags : `${pattern.regex.flags}g`);
+      let matched = false;
+      for (const m of line.matchAll(re)) {
+        matched = true;
+        matchedRanges.push([m.index ?? 0, (m.index ?? 0) + m[0].length]);
+      }
+      if (matched) {
         lineFindings.push({
           patternId: pattern.id,
           patternName: pattern.name,
@@ -135,6 +148,22 @@ export function scanText(
     // already matched, the catch-all *_KEY/*_SECRET assignment adds only noise.
     const specific = lineFindings.filter((f) => f.patternId !== 'generic-secret-assignment');
     findings.push(...(specific.length > 0 ? specific : lineFindings));
+    if (entropyEnabled) {
+      for (const token of findHighEntropyTokens(line, {
+        threshold: options.entropy?.threshold ?? DEFAULT_ENTROPY_THRESHOLD,
+        minLength: options.entropy?.minLength ?? DEFAULT_ENTROPY_MIN_LENGTH,
+      })) {
+        // Skip tokens that are (part of) a pattern match on the same line.
+        if (matchedRanges.some(([s, e]) => token.start < e && token.end > s)) continue;
+        findings.push({
+          patternId: 'high-entropy-string',
+          patternName: 'High-entropy string (possible secret)',
+          line: i + 1,
+          // Never the token itself — only its length and entropy.
+          snippet: `high-entropy token: ${token.length} chars, entropy ${token.entropy.toFixed(1)} bits/char — value redacted`,
+        });
+      }
+    }
   }
   return findings;
 }

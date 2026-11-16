@@ -1,4 +1,5 @@
-import { scanText, type Finding } from './patterns.js';
+import type { EntropyOptions } from './entropy.js';
+import { scanText, type Finding, type SecretPattern } from './patterns.js';
 
 export const DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB
 export const GITHUB_MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB — GitHub rejects larger files
@@ -24,8 +25,12 @@ export interface ScanResult {
 }
 
 /** Basenames / extensions that must never be committed. */
-export function isBlockedFile(file: string): boolean {
+export function isBlockedFile(file: string, denyList: readonly string[] = []): boolean {
   const base = file.split('/').pop() ?? file;
+  for (const entry of denyList) {
+    if (!entry) continue;
+    if (base === entry || base.endsWith(entry)) return true;
+  }
   if (base === '.env') return true;
   if (base.startsWith('.env.') && !['.example', '.sample', '.template'].some((s) => base.endsWith(s))) {
     return true;
@@ -50,6 +55,11 @@ export function checkLargeFile(file: string, bytes: number, maxBytes: number): L
 export interface ScanContentOptions {
   allowlist?: readonly string[];
   maxFileBytes?: number;
+  /** Extra secret patterns (added to the built-ins). */
+  patterns?: readonly SecretPattern[];
+  /** Extra blocked-file entries from commit-guard.json. */
+  denyList?: readonly string[];
+  entropy?: EntropyOptions;
 }
 
 /** Scan already-read file contents (used by the CLI and the tests). */
@@ -63,11 +73,15 @@ export function scanContents(
   const largeFiles: LargeFile[] = [];
 
   for (const file of files) {
-    if (isBlockedFile(file.path)) blockedFiles.push(file.path);
+    if (isBlockedFile(file.path, options.denyList)) blockedFiles.push(file.path);
     const large = checkLargeFile(file.path, file.bytes, maxBytes);
     if (large) largeFiles.push(large);
     if (file.content !== null) {
-      for (const f of scanText(file.content, { allowlist: options.allowlist })) {
+      for (const f of scanText(file.content, {
+        allowlist: options.allowlist,
+        patterns: options.patterns,
+        entropy: options.entropy,
+      })) {
         findings.push({ ...f, file: file.path });
       }
     }

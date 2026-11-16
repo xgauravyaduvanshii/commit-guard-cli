@@ -1,0 +1,21 @@
+{
+  "allowlist": [],
+  "denyList": [
+    "credentials.json",
+    ".keystore"
+  ],
+  "entropy": {
+    "enabled": true,
+    "minLength": 20,
+    "threshold": 4.5
+  },
+  "maxSizeMb": 5,
+  "patterns": [
+    {
+      "description": "Replace this with a pattern for your own service, e.g. MYAPI- + 32 letters/digits.",
+      "id": "my-api-key",
+      "name": "Example custom pattern",
+      "regex": "\\bMYAPI-[A-Za-z0-9]{32}\\b"
+    }
+  ]
+}
